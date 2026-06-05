@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>美股 vs 永续合约 价差监控</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #e0e0e0; padding: 16px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #888; font-size: 12px; margin-bottom: 14px; }
+  .status-bar { display: flex; gap: 16px; margin-bottom: 14px; font-size: 12px; color: #aaa; flex-wrap: wrap; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
+  .status-dot.on { background: #4caf50; }
+  .status-dot.off { background: #666; }
+  .status-dot.loading { background: #ff9800; }
+  
+  .session-nav { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .session-btn { padding: 5px 12px; border-radius: 5px; border: 1px solid #333; background: transparent; color: #888; cursor: pointer; font-size: 12px; }
+  .session-btn.active { background: #1a237e; border-color: #3949ab; color: #fff; }
+
+  .section-title { font-size: 13px; font-weight: 600; color: #999; margin: 16px 0 8px; padding-bottom: 6px; border-bottom: 1px solid #2a2a3a; }
+
+  .stock-list { display: flex; flex-direction: column; gap: 6px; }
+  .stock-card { background: #16162a; border-radius: 8px; padding: 10px 12px; }
+  .stock-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .stock-symbol { font-weight: 700; font-size: 15px; color: #fff; }
+  .stock-name { font-size: 11px; color: #888; margin-left: 8px; }
+  .stock-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .badge-perp { background: #1b3a5c; color: #64b5f6; }
+  .badge-no-perp { background: #2a2a3a; color: #666; }
+  .stock-prices { display: flex; gap: 12px; flex-wrap: wrap; }
+  .price-block { flex: 1; min-width: 100px; }
+  .price-label { font-size: 10px; color: #666; margin-bottom: 2px; }
+  .price-value { font-size: 16px; font-weight: 600; }
+  .price-sub { font-size: 11px; color: #888; }
+  .spread-block { flex: 1; min-width: 100px; text-align: right; }
+  .spread-value { font-size: 18px; font-weight: 700; }
+  .spread-pct { font-size: 13px; }
+  .spread-positive { color: #4caf50; }
+  .spread-negative { color: #f44336; }
+  .spread-neutral { color: #888; }
+  .opp-text { font-size: 11px; margin-top: 4px; }
+  .opp-high { color: #4caf50; }
+  .opp-mid { color: #ff9800; }
+  .opp-low { color: #666; }
+
+  .meta { margin-top: 16px; padding: 10px; background: #1a1a2e; border-radius: 6px; font-size: 11px; color: #666; line-height: 1.6; }
+  
+  .loading { text-align: center; padding: 40px; color: #666; font-size: 14px; }
+  .error { text-align: center; padding: 16px; color: #f44336; background: #2e1a1a; border-radius: 8px; font-size: 13px; }
+  
+  @media (min-width: 768px) {
+    body { padding: 24px; max-width: 1200px; margin: 0 auto; }
+    .stock-card { padding: 12px 16px; }
+    .stock-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  }
+</style>
+</head>
+<body>
+  <h1>美股 vs 加密永续合约</h1>
+  <p class="subtitle">实时价差监控 · 正股价格 vs MEXC 股票永续合约</p>
+
+  <div class="status-bar">
+    <span><span class="status-dot" id="dot"></span><span id="statusText">加载中...</span></span>
+    <span>更新: <span id="updateTime">-</span></span>
+    <span id="sessionLabel">📊 -</span>
+  </div>
+
+  <div class="session-nav">
+    <button class="session-btn active" data-mode="tradable">可交易套利</button>
+    <button class="session-btn" data-mode="all">全部</button>
+  </div>
+
+  <div id="content">
+    <div class="loading">正在获取数据...</div>
+  </div>
+
+  <div class="meta">
+    <p>套利条件: 价差 > 2% 且方向明确时存在套利窗口</p>
+    <p>交易时段: 盘前(美东4-9:30) | 盘中(9:30-16:00) | 盘后(16-20:00) | 隔夜(20-4:00)</p>
+    <p>数据源: Yahoo Finance (正股) · MEXC (永续合约) · 浏览器端直接调用，无后端</p>
+    <p>自动刷新: 每30秒 | 因CORS限制部分数据可能需代理才能获取</p>
+  </div>
+
+<script>
+// Stock perpetuals on MEXC with price multiplier
+// mult: converts MEXC perp price to per-share equivalent
+const PERPS = {
+  'AAOISTOCK_USDT':  { stock: 'AAOI', name: 'Applied Optoelectronics', mult: 1 },
+  'AAPLSTOCK_USDT':  { stock: 'AAPL', name: 'Apple Inc', mult: 1 },
+  'ADBESTOCK_USDT':  { stock: 'ADBE', name: 'Adobe Inc', mult: 1 },
+  'AMZNSTOCK_USDT':  { stock: 'AMZN', name: 'Amazon.com Inc', mult: 1 },
+  'CRMSTOCK_USDT':   { stock: 'CRM',  name: 'Salesforce Inc', mult: 1 },
+  'CSCOSTOCK_USDT':  { stock: 'CSCO', name: 'Cisco Systems Inc', mult: 1 },
+  'INTCSTOCK_USDT':  { stock: 'INTC', name: 'Intel Corporation', mult: 1 },
+  'KLACSTOCK_USDT':  { stock: 'KLAC', name: 'KLA Corporation', mult: 1 },
+  'METASTOCK_USDT':  { stock: 'META', name: 'Meta Platforms Inc', mult: 1 },
+  'MSFTSTOCK_USDT':  { stock: 'MSFT', name: 'Microsoft Corporation', mult: 1 },
+  'NFLXSTOCK_USDT':  { stock: 'NFLX', name: 'Netflix Inc', mult: 0.1 },
+  'PLTRSTOCK_USDT':  { stock: 'PLTR', name: 'Palantir Technologies', mult: 1 },
+};
+
+const EXTRA_STOCKS = ['NVDA','TSLA','AMD','GOOGL','AVGO','SMCI','ARM','MU',
+                      'QCOM','DIS','UBER','MRVL','COST','VRTX','PANW','BKNG',
+                      'TMUS','GILD','SBUX','AMGN'];
+
+const ALL_SYMBOLS = [...new Set([...Object.values(PERPS).map(p => p.stock), ...EXTRA_STOCKS])];
+
+async function fetchYahoo(symbol) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const d = await r.json();
+    const meta = d?.chart?.result?.[0]?.meta || {};
+    return {
+      price: meta.regularMarketPrice || null,
+      prevClose: meta.chartPreviousClose || null,
+      high: meta.regularMarketDayHigh || null,
+      low: meta.regularMarketDayLow || null,
+      volume: meta.regularMarketVolume || null
+    };
+  } catch { return { price: null, prevClose: null, high: null, low: null, volume: null }; }
+}
+
+async function fetchMEXC(symbol) {
+  try {
+    // Use public CORS proxy for MEXC (MEXC API doesn't set CORS headers)
+    const url = `https://api.allorigins.win/raw?url=${encodeURIComponent('https://contract.mexc.com/api/v1/contract/ticker?symbol=' + symbol)}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d?.success && d?.data) {
+      return {
+        price: parseFloat(d.data.lastPrice) || null,
+        index: parseFloat(d.data.indexPrice) || null,
+        fr: parseFloat(d.data.fundingRate) || null,
+        bid: parseFloat(d.data.bid1) || null,
+        ask: parseFloat(d.data.ask1) || null,
+        volume24: d.data.volume24 || null,
+        holdVol: d.data.holdVol || null
+      };
+    }
+  } catch {}
+  return { price: null, index: null, fr: null, bid: null, ask: null, volume24: null, holdVol: null };
+}
+
+function getSession() {
+  const now = new Date();
+  const etHour = (now.getUTCHours() - 4 + 24) % 24;
+  const etMin = now.getUTCMinutes();
+  const et = etHour + etMin / 60;
+  if (et >= 4 && et < 9.5) return 'pre';
+  if (et >= 9.5 && et < 16) return 'regular';
+  if (et >= 16 && et < 20) return 'after';
+  return 'overnight';
+}
+
+const sessionLabels = { 'pre': '盘前', 'regular': '盘中', 'after': '盘后', 'overnight': '隔夜' };
+
+async function gatherData() {
+  const results = [];
+  for (const symbol of ALL_SYMBOLS) {
+    const stockData = await fetchYahoo(symbol);
+    const perpKey = Object.keys(PERPS).find(k => PERPS[k].stock === symbol);
+    let perpData = null;
+    if (perpKey) {
+      const raw = await fetchMEXC(perpKey);
+      const mult = PERPS[perpKey].mult || 1;
+      perpData = {
+        price: raw.price !== null ? raw.price * mult : null,
+        index: raw.index !== null ? raw.index * mult : null,
+        fr: raw.fr,
+        bid: raw.bid,
+        ask: raw.ask,
+        volume24: raw.volume24,
+        holdVol: raw.holdVol
+      };
+    }
+    const stockPrice = stockData.price;
+    const perpPrice = perpData?.price;
+    let spreadPercent = null;
+    if (stockPrice && perpPrice) {
+      spreadPercent = ((stockPrice - perpPrice) / stockPrice) * 100;
+    }
+    results.push({
+      symbol,
+      name: PERPS[perpKey]?.name || stockData.name || '',
+      hasPerp: !!perpKey,
+      stockPrice,
+      perpPrice,
+      perpIndex: perpData?.index,
+      perpFR: perpData?.fr,
+      perpVolume24: perpData?.volume24,
+      perpOI: perpData?.holdVol,
+      spreadPercent
+    });
+  }
+  return { stocks: results, session: getSession() };
+}
+
+function render(data) {
+  const el = document.getElementById('content');
+  const mode = document.querySelector('.session-btn.active')?.dataset?.mode || 'tradable';
+  
+  document.getElementById('updateTime').textContent = new Date().toLocaleTimeString('zh-CN', {hour12: false});
+  
+  if (!data || !data.stocks) {
+    el.innerHTML = '<div class="error">⚠️ 无法获取数据</div>';
+    document.getElementById('statusText').textContent = '错误';
+    document.getElementById('dot').className = 'status-dot off';
+    return;
+  }
+
+  document.getElementById('statusText').textContent = `${data.stocks.length} 只`;
+  document.getElementById('dot').className = 'status-dot on';
+  document.getElementById('sessionLabel').textContent = `📊 ${sessionLabels[data.session] || data.session}`;
+
+  let filtered = [...data.stocks];
+  if (mode === 'tradable') filtered = filtered.filter(s => s.hasPerp);
+  
+  filtered.sort((a, b) => {
+    if (a.hasPerp !== b.hasPerp) return a.hasPerp ? -1 : 1;
+    const sa = a.spreadPercent !== null ? Math.abs(a.spreadPercent) : -1;
+    const sb = b.spreadPercent !== null ? Math.abs(b.spreadPercent) : -1;
+    return sb - sa;
+  });
+
+  let html = '';
+  const perps = filtered.filter(s => s.hasPerp);
+  if (perps.length > 0) {
+    html += '<div class="section-title">📡 有永续合约 — 价差排序</div><div class="stock-list">';
+    for (const s of perps) html += cardHtml(s);
+    html += '</div>';
+  }
+  const noPerps = filtered.filter(s => !s.hasPerp);
+  if (mode === 'all' && noPerps.length > 0) {
+    html += '<div class="section-title">📈 其他热门股 (无永续)</div><div class="stock-list">';
+    for (const s of noPerps) html += cardNoPerp(s);
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function cardHtml(s) {
+  const sp = s.stockPrice, pp = s.perpPrice;
+  let spread = null, pct = null, cls = 'spread-neutral';
+  if (sp && pp) {
+    spread = sp - pp;
+    pct = (spread / sp) * 100;
+    cls = pct > 1.5 ? 'spread-positive' : pct < -1.5 ? 'spread-negative' : 'spread-neutral';
+  }
+  let opp = '';
+  if (pct !== null) {
+    if (Math.abs(pct) > 2) {
+      const d = pct > 0 ? '做空正股+做多永续' : '做多正股+做空永续';
+      opp = `<div class="opp-text opp-high">✅ ${d}</div>`;
+    } else if (Math.abs(pct) > 1) {
+      const d = pct > 0 ? '做空正股+做多永续' : '做多正股+做空永续';
+      opp = `<div class="opp-text opp-mid">⚠️ ${d}</div>`;
+    } else opp = `<div class="opp-text opp-low">❌ 价差过小</div>`;
+  }
+  const fr = s.perpFR !== null ? `${(s.perpFR * 100).toFixed(2)}%` : '-';
+  return `<div class="stock-card">
+    <div class="stock-card-header">
+      <div><span class="stock-symbol">${s.symbol}</span><span class="stock-name">${s.name}</span></div>
+      <span class="stock-badge badge-perp">永续 ✓</span>
+    </div>
+    <div class="stock-prices">
+      <div class="price-block">
+        <div class="price-label">正股</div>
+        <div class="price-value">${sp ? '$' + sp.toFixed(2) : '-'}</div>
+      </div>
+      <div class="price-block">
+        <div class="price-label">永续</div>
+        <div class="price-value">${pp ? '$' + pp.toFixed(2) : '-'}</div>
+        <div class="price-sub">指数: ${s.perpIndex ? '$' + s.perpIndex.toFixed(2) : '-'} · 资金费: ${fr}</div>
+      </div>
+      <div class="spread-block">
+        <div class="price-label">价差</div>
+        <div class="spread-value ${cls}">${spread !== null ? (spread > 0 ? '+' : '') + '$' + spread.toFixed(2) : '-'}</div>
+        <div class="spread-pct ${cls}">${pct !== null ? (pct > 0 ? '+' : '') + pct.toFixed(2) + '%' : '-'}</div>
+        ${opp}
+      </div>
+    </div>
+  </div>`;
+}
+
+function cardNoPerp(s) {
+  return `<div class="stock-card">
+    <div class="stock-card-header">
+      <div><span class="stock-symbol">${s.symbol}</span><span class="stock-name">${s.name}</span></div>
+      <span class="stock-badge badge-no-perp">无</span>
+    </div>
+    <div class="stock-prices">
+      <div class="price-block">
+        <div class="price-label">正股</div>
+        <div class="price-value">${s.stockPrice ? '$' + s.stockPrice.toFixed(2) : '-'}</div>
+      </div>
+      <div class="price-block">
+        <div class="price-label">永续</div>
+        <div class="price-value" style="color:#555">暂无</div>
+      </div>
+      <div class="spread-block">
+        <div class="price-label">&nbsp;</div>
+        <div class="spread-value" style="color:#555">N/A</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+document.querySelectorAll('.session-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.session-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    run();
+  });
+});
+
+async function run() {
+  document.getElementById('dot').className = 'status-dot loading';
+  document.getElementById('statusText').textContent = '请求中...';
+  const data = await gatherData();
+  render(data);
+}
+
+run();
+setInterval(run, 30000);
+</script>
+</body>
+</html>
