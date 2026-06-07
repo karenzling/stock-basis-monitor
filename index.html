@@ -53,8 +53,9 @@ h1{font-size:20px;margin-bottom:4px}
 <div class="status-bar"><span><span class="dot" id="dot"></span><span id="st">加载中...</span></span><span>更新: <span id="ut">-</span></span><span id="sl">📊 -</span></div>
 <div class="nav"><button class="on" data-m="t">可交易套利</button><button data-m="a">全部</button></div>
 <div id="c"><div class="lo">正在获取数据...</div></div>
-<div class="mt"><p>套利条件: 价差&gt;2% 且方向明确时存在套利窗口</p><p>数据源: Yahoo Finance (正股) · MEXC (永续合约)</p><p>自动刷新: 每30秒</p></div>
+<div class="mt"><p>套利条件: 价差&gt;2% 且方向明确时存在套利窗口</p><p>自动刷新: 每30秒 · 数据来源: 服务器实时计算</p></div>
 <script>
 const P={'AAOISTOCK_USDT':{s:'AAOI',n:'Applied Optoelectronics'},'AAPLSTOCK_USDT':{s:'AAPL',n:'Apple Inc'},'ADBESTOCK_USDT':{s:'ADBE',n:'Adobe Inc'},'AMZNSTOCK_USDT':{s:'AMZN',n:'Amazon.com Inc'},'CRMSTOCK_USDT':{s:'CRM',n:'Salesforce Inc'},'CSCOSTOCK_USDT':{s:'CSCO',n:'Cisco Systems Inc'},'INTCSTOCK_USDT':{s:'INTC',n:'Intel Corporation'},'KLACSTOCK_USDT':{s:'KLAC',n:'KLA Corporation'},'METASTOCK_USDT':{s:'META',n:'Meta Platforms Inc'},'MSFTSTOCK_USDT':{s:'MSFT',n:'Microsoft Corporation'},'NFLXSTOCK_USDT':{s:'NFLX',n:'Netflix Inc',m:.1},'PLTRSTOCK_USDT':{s:'PLTR',n:'Palantir Technologies'}};
 const X=['NVDA','TSLA','AMD','GOOGL','AVGO','SMCI','ARM','MU','QCOM','DIS','UBER','MRVL','COST','VRTX','PANW','BKNG','TMUS','GILD','SBUX','AMGN'];
 const A=[...new Set([...Object.values(P).map(x=>x.s),...X])];
+const sl={pre:'盘前',regular:'盘中',after:'盘后',overnight:'隔夜'};
