@@ -107,41 +107,15 @@ const EXTRA_STOCKS = ['NVDA','TSLA','AMD','GOOGL','AVGO','SMCI','ARM','MU',
 
 const ALL_SYMBOLS = [...new Set([...Object.values(PERPS).map(p => p.stock), ...EXTRA_STOCKS])];
 
-async function fetchYahoo(symbol) {
+async function fetchAllData() {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
-    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const r = await fetch('/api/data');
     const d = await r.json();
-    const meta = d?.chart?.result?.[0]?.meta || {};
-    return {
-      price: meta.regularMarketPrice || null,
-      prevClose: meta.chartPreviousClose || null,
-      high: meta.regularMarketDayHigh || null,
-      low: meta.regularMarketDayLow || null,
-      volume: meta.regularMarketVolume || null
-    };
-  } catch { return { price: null, prevClose: null, high: null, low: null, volume: null }; }
-}
-
-async function fetchMEXC(symbol) {
-  try {
-    // Use public CORS proxy for MEXC (MEXC API doesn't set CORS headers)
-    const url = `https://api.allorigins.win/raw?url=${encodeURIComponent('https://contract.mexc.com/api/v1/contract/ticker?symbol=' + symbol)}`;
-    const r = await fetch(url);
-    const d = await r.json();
-    if (d?.success && d?.data) {
-      return {
-        price: parseFloat(d.data.lastPrice) || null,
-        index: parseFloat(d.data.indexPrice) || null,
-        fr: parseFloat(d.data.fundingRate) || null,
-        bid: parseFloat(d.data.bid1) || null,
-        ask: parseFloat(d.data.ask1) || null,
-        volume24: d.data.volume24 || null,
-        holdVol: d.data.holdVol || null
-      };
-    }
-  } catch {}
-  return { price: null, index: null, fr: null, bid: null, ask: null, volume24: null, holdVol: null };
+    return d;
+  } catch (e) {
+    console.error('API error:', e);
+    return null;
+  }
 }
 
 function getSession() {
@@ -158,44 +132,9 @@ function getSession() {
 const sessionLabels = { 'pre': '盘前', 'regular': '盘中', 'after': '盘后', 'overnight': '隔夜' };
 
 async function gatherData() {
-  const results = [];
-  for (const symbol of ALL_SYMBOLS) {
-    const stockData = await fetchYahoo(symbol);
-    const perpKey = Object.keys(PERPS).find(k => PERPS[k].stock === symbol);
-    let perpData = null;
-    if (perpKey) {
-      const raw = await fetchMEXC(perpKey);
-      const mult = PERPS[perpKey].mult || 1;
-      perpData = {
-        price: raw.price !== null ? raw.price * mult : null,
-        index: raw.index !== null ? raw.index * mult : null,
-        fr: raw.fr,
-        bid: raw.bid,
-        ask: raw.ask,
-        volume24: raw.volume24,
-        holdVol: raw.holdVol
-      };
-    }
-    const stockPrice = stockData.price;
-    const perpPrice = perpData?.price;
-    let spreadPercent = null;
-    if (stockPrice && perpPrice) {
-      spreadPercent = ((stockPrice - perpPrice) / stockPrice) * 100;
-    }
-    results.push({
-      symbol,
-      name: PERPS[perpKey]?.name || stockData.name || '',
-      hasPerp: !!perpKey,
-      stockPrice,
-      perpPrice,
-      perpIndex: perpData?.index,
-      perpFR: perpData?.fr,
-      perpVolume24: perpData?.volume24,
-      perpOI: perpData?.holdVol,
-      spreadPercent
-    });
-  }
-  return { stocks: results, session: getSession() };
+  const apiData = await fetchAllData();
+  if (!apiData || !apiData.stocks) return { stocks: [], session: 'overnight' };
+  return { stocks: apiData.stocks, session: apiData.session };
 }
 
 function render(data) {
