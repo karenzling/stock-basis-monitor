@@ -53,9 +53,171 @@ h1{font-size:20px;margin-bottom:4px}
 <div class="status-bar"><span><span class="dot" id="dot"></span><span id="st">加载中...</span></span><span>更新: <span id="ut">-</span></span><span id="sl">📊 -</span></div>
 <div class="nav"><button class="on" data-m="t">可交易套利</button><button data-m="a">全部</button></div>
 <div id="c"><div class="lo">正在获取数据...</div></div>
-<div class="mt"><p>套利条件: 价差&gt;2% 且方向明确时存在套利窗口</p><p>自动刷新: 每30秒 · 数据来源: 服务器实时计算</p></div>
+<div class="mt"><p>套利条件: 价差&gt;2% 且方向明确时存在套利窗口</p><p>自动刷新: 每30秒 · 数据来源: MEXC + Yahoo Finance</p></div>
 <script>
 const P={'AAOISTOCK_USDT':{s:'AAOI',n:'Applied Optoelectronics'},'AAPLSTOCK_USDT':{s:'AAPL',n:'Apple Inc'},'ADBESTOCK_USDT':{s:'ADBE',n:'Adobe Inc'},'AMZNSTOCK_USDT':{s:'AMZN',n:'Amazon.com Inc'},'CRMSTOCK_USDT':{s:'CRM',n:'Salesforce Inc'},'CSCOSTOCK_USDT':{s:'CSCO',n:'Cisco Systems Inc'},'INTCSTOCK_USDT':{s:'INTC',n:'Intel Corporation'},'KLACSTOCK_USDT':{s:'KLAC',n:'KLA Corporation'},'METASTOCK_USDT':{s:'META',n:'Meta Platforms Inc'},'MSFTSTOCK_USDT':{s:'MSFT',n:'Microsoft Corporation'},'NFLXSTOCK_USDT':{s:'NFLX',n:'Netflix Inc',m:.1},'PLTRSTOCK_USDT':{s:'PLTR',n:'Palantir Technologies'}};
 const X=['NVDA','TSLA','AMD','GOOGL','AVGO','SMCI','ARM','MU','QCOM','DIS','UBER','MRVL','COST','VRTX','PANW','BKNG','TMUS','GILD','SBUX','AMGN'];
 const A=[...new Set([...Object.values(P).map(x=>x.s),...X])];
 const sl={pre:'盘前',regular:'盘中',after:'盘后',overnight:'隔夜'};
+
+// ====== DATA FETCHING ======
+
+async function fetchMexcPrice(symbol) {
+  const pair = symbol + 'ONUSDT';
+  const url = `https://api.mexc.com/api/v3/ticker/24hr?symbol=${pair}`;
+  const r = await fetch(url);
+  const d = await r.json();
+  return {
+    price: parseFloat(d.lastPrice),
+    change: parseFloat(d.priceChangePercent),
+    high: parseFloat(d.highPrice),
+    low: parseFloat(d.lowPrice),
+    vol: parseFloat(d.quoteVolume)
+  };
+}
+
+async function fetchStockPrice(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d`;
+  const r = await fetch(url);
+  const d = await r.json();
+  const meta = d.chart.result[0].meta;
+  return {
+    price: meta.regularMarketPrice,
+    prevClose: meta.previousClose,
+    change: ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose * 100)
+  };
+}
+
+// ====== CORE LOGIC ======
+
+let allData = [];
+let filteredMode = 't';
+
+async function loadAll() {
+  document.getElementById('st').textContent = '获取数据中...';
+  document.getElementById('dot').className = 'dot orange';
+  document.getElementById('ut').textContent = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+
+  const results = [];
+  for (const sym of A) {
+    try {
+      const [stock, perp] = await Promise.all([
+        fetchStockPrice(sym),
+        fetchMexcPrice(sym)
+      ]);
+      const spread = ((perp.price - stock.price) / stock.price * 100);
+      const absSpread = Math.abs(spread);
+
+      let displayName = sym;
+      for (const k of Object.keys(P)) {
+        if (P[k].s === sym) { displayName = P[k].n; break; }
+      }
+
+      const tradable = absSpread > 2;
+      const direction = spread > 0 ? '永续溢价' : '永续折价';
+      const signal = tradable ? (spread > 0 ? '做空永续+买入正股' : '做多永续+卖出正股') : '-';
+
+      results.push({
+        symbol: sym,
+        name: displayName,
+        stockPrice: stock.price,
+        perpPrice: perp.price,
+        spread: spread,
+        absSpread: absSpread,
+        stockChange: stock.change,
+        perpChange: perp.change,
+        perpVol: perp.vol,
+        tradable: tradable,
+        direction: direction,
+        signal: signal
+      });
+    } catch(e) {
+      console.warn(`Failed for ${sym}:`, e);
+    }
+  }
+
+  allData = results;
+  render();
+
+  document.getElementById('st').textContent = '运行中';
+  document.getElementById('sl').textContent = `📊 ${results.length} 只`;
+  document.getElementById('dot').className = 'dot green';
+}
+
+// ====== RENDER ======
+
+function render() {
+  let list = filteredMode === 't' ? allData.filter(d => d.tradable) : allData;
+  list.sort((a, b) => b.absSpread - a.absSpread);
+
+  const container = document.getElementById('c');
+
+  if (list.length === 0) {
+    container.innerHTML = '<div class="lo">暂无符合条件的数据</div>';
+    return;
+  }
+
+  let html = '';
+  let currentSection = null;
+
+  for (const d of list) {
+    const section = d.tradable ? '🔴 可套利' : '⚪ 监控中';
+    if (section !== currentSection) {
+      if (currentSection !== null) html += '</div>';
+      html += `<div class="sec">${section} (价差 &gt;2%)</div><div class="lst">`;
+      currentSection = section;
+    }
+
+    const spreadColor = d.spread > 0 ? 'gr' : 're';
+    const spreadSign = d.spread > 0 ? '+' : '';
+
+    html += `
+      <div class="card">
+        <div class="ch">
+          <span class="sym">${d.symbol}</span>
+          <span class="nm">${d.name}</span>
+          <span class="badge ${d.tradable ? 'bp' : 'bn'}">${d.direction}</span>
+        </div>
+        <div class="pr">
+          <div class="pb">
+            <div class="lbl">正股</div>
+            <div class="val">$${d.stockPrice.toFixed(2)}</div>
+            <div class="sub ${d.stockChange > 0 ? 'gr' : 're'}">${d.stockChange > 0 ? '+' : ''}${d.stockChange.toFixed(2)}%</div>
+          </div>
+          <div class="pb">
+            <div class="lbl">永续合约</div>
+            <div class="val">$${d.perpPrice.toFixed(2)}</div>
+            <div class="sub ${d.perpChange > 0 ? 'gr' : 're'}">${d.perpChange > 0 ? '+' : ''}${d.perpChange.toFixed(2)}%</div>
+          </div>
+          <div class="sb">
+            <div class="lbl">价差</div>
+            <div class="sv ${spreadColor}">${spreadSign}${d.spread.toFixed(2)}%</div>
+            ${d.tradable ? `<div class="sp gr">${d.signal}</div>` : '<div class="sp ne">-</div>'}
+          </div>
+        </div>
+        <div class="ot">永续24h交易额: $${(d.perpVol/1e6).toFixed(1)}M · 建议: ${d.signal}</div>
+      </div>`;
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ====== NAV ======
+
+document.querySelectorAll('.nav button').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.nav button').forEach(b => b.classList.remove('on'));
+    this.classList.add('on');
+    filteredMode = this.dataset.m;
+    render();
+  });
+});
+
+// ====== INIT ======
+
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>
